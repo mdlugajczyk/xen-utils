@@ -1,0 +1,8 @@
+bt - square
+cg - power of two
+ep - all
+ft - power of two
+is - power of two
+lu - ?
+mg - power of two
+sp - square

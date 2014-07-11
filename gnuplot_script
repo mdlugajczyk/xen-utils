@@ -1,0 +1,1 @@
+plot "cosch/results.dat" using 2:xtic(1) with histogram title "cosch", "credit/results.dat" using 2:xtic(1) with histogram title "credit"

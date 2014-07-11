@@ -1,0 +1,14 @@
+- hosts: mpi_nodes
+  sudo: True
+  tasks: 
+
+    - name: Update apt repositories
+      action: apt update_cache=True
+
+    - name : Install dependencies
+      action: apt pkg={{ item }} state=latest
+      with_items:
+        - gcc
+        - make
+        - libnss-myhostname
+        - mpich2
