@@ -1,113 +1,166 @@
 #!/bin/bash
 
-USER=$1
-NODE=$2
+NODES=4
+PASS=$1
+USER=master
+VM_REGISTRATION_FILE=~/registered_ips
 
-BENCH_DIR=NPB3.3.1
-CLASS=B
-
-# declare -a bt=(bt $CLASS 36);
-# declare -a cg=(cg $CLASS 32);
-# declare -a ep=(ep $CLASS 36);
-# declare -a ft=(ft $CLASS 32);
-# declare -a is=(is $CLASS 32);
-# declare -a lu=(lu $CLASS 36);
-# declare -a mg=(mg $CLASS 32);
-# declare -a sp=(sp $CLASS 36);
-
-# declare -a bt=(bt $CLASS 25);
-# declare -a cg=(cg $CLASS 16);
-# declare -a ep=(ep $CLASS 24);
-# declare -a ft=(ft $CLASS 16);
-# declare -a is=(is $CLASS 16);
-# declare -a lu=(lu $CLASS 24);
-# declare -a mg=(mg $CLASS 16);
-# declare -a sp=(sp $CLASS 25);
-
-# declare -a bt=(bt $CLASS 49);
-# declare -a cg=(cg $CLASS 32);
-# declare -a ep=(ep $CLASS 48);
-# declare -a ft=(ft $CLASS 32);
-# declare -a is=(is $CLASS 32);
-# declare -a lu=(lu $CLASS 48);
-# declare -a mg=(mg $CLASS 32);
-# declare -a sp=(sp $CLASS 49);
-
-declare -a bt=(bt $CLASS 4);
-declare -a cg=(cg $CLASS 2);
-declare -a ep=(ep $CLASS 2);
-declare -a ft=(ft $CLASS 2);
-declare -a is=(is $CLASS 2);
-declare -a lu=(lu $CLASS 2);
-declare -a mg=(mg $CLASS 2);
-declare -a sp=(sp $CLASS 4);
-
-if [ $# -ne 2 ]
+if [ $# -ne 1 ]
 then
-    echo "Usage: $0 user-name node-name"
+    echo "Usage: $0 password";
     exit 1;
 fi
 
-# args: nprocs ben_name results_file results_dir
-function run_benchmark {
-    ssh $USER@$NODE "mpirun -n $1 -machinefile machinefile ./bin/$2 > $3"
-    scp $USER@$NODE:~/$3 $4
-}
-
-function build_benchmarks {
-    ssh $USER@$NODE "rm -rf ~/bin"
-
-    for host in $(cat benchmark/machinefile); do
-    	ssh -oStrictHostKeyChecking=no $USER@$host "rm -rf ~/bin"
-    done
-
-    scp benchmark/NPB3.3.1.tar.gz $USER@$NODE:
-    ssh $USER@$NODE "rm -rf $BENCH_DIR && tar zxvf $BENCH_DIR.tar.gz"
-    scp suite.def.tmp $USER@$NODE:~/$BENCH_DIR/NPB3.3-MPI/config/suite.def
-    scp benchmark/make.def $USER@$NODE:~/$BENCH_DIR/NPB3.3-MPI/config/make.def
-    ssh $USER@$NODE "cd $BENCH_DIR/NPB3.3-MPI; make suite; mv bin ~/"
-    scp benchmark/machinefile $USER@$NODE:
-
-    for host in $(cat benchmark/machinefile); do
-    	ssh -oStrictHostKeyChecking=no $USER@$host "mkdir ~/bin || echo 'bin exists'"
-    	ssh -oStrictHostKeyChecking=no $USER@$NODE "ssh $host -oStrictHostKeyChecking=no 'ls'" >> /dev/null # add ssh key to avoid key validation error
-    	scp -oStrictHostKeyChecking=no $USER@$NODE:~/bin/* $USER@$host:~/bin
+function wait_for {
+    eval $1
+    while [ $? -ne 0 ]
+    do
+	sleep 1;
+	eval $1
     done
 }
 
-function configure_benchmarks {
-    rm suite.def.tmp
-    touch suite.def.tmp
-    echo "bt ${bt[1]} ${bt[2]}" >> suite.def.tmp
-    echo "cg ${cg[1]} ${cg[2]}" >> suite.def.tmp
-    echo "ep ${ep[1]} ${ep[2]}" >> suite.def.tmp
-    echo "ft ${ft[1]} ${ft[2]}" >> suite.def.tmp
-    echo "is ${is[1]} ${is[2]}" >> suite.def.tmp
-    echo "lu ${lu[1]} ${lu[2]}" >> suite.def.tmp
-    echo "mg ${mg[1]} ${mg[2]}" >> suite.def.tmp
-    echo "sp ${sp[1]} ${sp[2]}" >> suite.def.tmp
+function wait_for_host {
+    wait_for "ssh $1 'ls' >> /dev/null"
 }
 
-#args : results_dir
+function wait_for_all_hosts {
+    for i in `seq 4`; do
+	wait_for_host "master@compute-02$i"
+    done
+}
+
+function for_each_host {
+    local cmd=$1
+    for node in `seq $NODES`; do
+	ssh $USER@"compute-02$node" $cmd
+    done
+}
+
+function create_config {
+    local memory=$3
+    local file_name="mpi_node_${2}.cfg"
+    echo "disk = ['file:/home/master/disk_mpi_${2}.img,xvda,w']" > $file_name
+    echo "vif = ['bridge=virbr0']" >> $file_name
+    echo "memory = $memory" >> $file_name
+    echo "name = 'mpi_node_${2}'" >> $file_name
+    echo "vcpu = 1" >> $file_name
+    echo "cpus = '$1'" >> $file_name
+    echo "bootloader = 'pygrub'" >> $file_name
+    echo "on_crash = 'restart'" >> $file_name
+}
+
+function create_config_files {
+    local first_cpu=$1
+    local last_cpu=$2
+    local group_id=$3
+    local memory=$4
+
+    for cpu in `seq $first_cpu $last_cpu`; do
+	create_config $cpu "${group_id}_${cpu}" $memory
+    done
+}
+
+function setup_mpi_group {
+    local group_id=$1
+    local exp_id=$2
+    local first_cpu=$3
+    local last_cpu=$4
+    local memory=$5
+    local num_vms=$(echo "$NODES*($last_cpu-$first_cpu+1)" | bc)
+    echo $num_vms
+
+    create_config_files $first_cpu $last_cpu $group_id $memory
+    
+    for node in `seq $NODES`; do
+	echo "Building cluster at node $node..."
+    	./create-mpi-cluster.sh "master@compute-02$node" $first_cpu $last_cpu $memory $group_id >> /dev/null &
+    done
+    wait
+    echo "Every node is ready!"
+    echo "Waiting for vms to register"
+    wait_for "wc -l $VM_REGISTRATION_FILE |grep $num_vms"
+    echo "All vms registered!"
+}
+
+function setup_experiment {
+    local vm_per_cpu=$1
+    local suite_def=$2
+    ./remove-cluster.sh
+    for i in `seq $vm_per_cpu`; do
+	rm $VM_REGISTRATION_FILE
+	echo "CREATING GROUP $i"
+	setup_mpi_group $i 2 1 3 400
+	mv $VM_REGISTRATION_FILE machinefiles/machinefile-${i}
+    done
+
+    for i in `seq $vm_per_cpu`; do
+    	./build_benchmark.sh $USER $(head -n 1 machinefiles/machinefile-${i}) $suite_def machinefiles/machinefile-${i} >> /dev/null &
+    done
+    wait
+    echo "All benchmarks are build"
+}
+
 function run_suite {
-    results_dir=$1
-    mkdir $results_dir
-    echo "run!"
-    run_benchmark ${bt[2]} "${bt[0]}.${bt[1]}.${bt[2]}" "result_${bt[0]}_${bt[1]}_${bt[2]}" $results_dir
-    run_benchmark ${cg[2]} "${cg[0]}.${cg[1]}.${cg[2]}" "result_${cg[0]}_${cg[1]}_${cg[2]}" $results_dir
-    run_benchmark ${ep[2]} "${ep[0]}.${ep[1]}.${ep[2]}" "result_${ep[0]}_${ep[1]}_${ep[2]}" $results_dir
-    run_benchmark ${ft[2]} "${ft[0]}.${ft[1]}.${ft[2]}" "result_${ft[0]}_${ft[1]}_${ft[2]}" $results_dir
-    run_benchmark ${is[2]} "${is[0]}.${is[1]}.${is[2]}" "result_${is[0]}_${is[1]}_${is[2]}" $results_dir
-    run_benchmark ${lu[2]} "${lu[0]}.${lu[1]}.${lu[2]}" "result_${lu[0]}_${lu[1]}_${lu[2]}" $results_dir
-    run_benchmark ${mg[2]} "${mg[0]}.${mg[1]}.${mg[2]}" "result_${mg[0]}_${mg[1]}_${mg[2]}" $results_dir
-    run_benchmark ${sp[2]} "${sp[0]}.${sp[1]}.${sp[2]}" "result_${sp[0]}_${sp[1]}_${sp[2]}" $results_dir
+    local group_id=$1
+    local suite_def=$2
+    local results_dir=$3
+    local host=$(head -n 1 machinefiles/machinefile-${group_id})
 
-    echo "RESULTS IN DIR: $RESULTS_DIR"
+    for iteration in `seq 5`; do
+    	mkdir "${results_dir}/${iteration}"
+    	while read bench; do
+    	    bin=$(echo $bench | awk '{print $1}')
+    	    class=$(echo $bench | awk '{print $2}')
+    	    nprocs=$(echo $bench | awk '{print $3}')
+    	    name="${bin}.${class}.${nprocs}"
+    	    ssh $USER@$host "mpirun -n $nprocs -machinefile machinefile ./bin/${name} > result_${name}_${group_id}" < /dev/null
+    	    scp $USER@$host:result_${name}_${group_id} "${results_dir}/${iteration}/"
+    	done < $suite_def
+    done
+
+    ./gather_results.sh ${results_dir}
 }
 
+function run_experiment {
+    local vm_per_cpu=$1
+    local suite_def=$2
+    local name=$3
+    local results=$4
+    setup_experiment $vm_per_cpu $suite_def
+    for i in `seq $vm_per_cpu`; do
+    	mkdir -p "${results}/${name}/group_${i}"
+    	run_suite $i $suite_def "${results}/${name}/group_${i}" &
+    done
+    wait
+}
 
-configure_benchmarks;
-build_benchmarks;
-for i in `seq 1 5`; do
-    run_suite "results-$i-$RANDOM"
-done
+function run_experiment_credit {
+    local results=$1
+    ./boot_credit.sh
+    ./reboot.sh $PASS
+    wait_for_all_hosts
+    for time_slice in 30 5 1; do
+	for_each_host "sudo xl sched-credit -s -t ${time_slice}"
+	for vm in 1 2 3 4; do
+	    echo "time_slice: $time_slice  vm: $vm  ${results}/${vm}_per_cpu/"
+	    run_experiment $vm "benchmark/suite.def.4nodes" "credit_${time_slice}" "${results}/${vm}_per_cpu/"
+	done
+    done
+}
+
+function run_experiment_robin {
+    local results=$1
+    local time_slice=5
+    for vm in 1 2 3 4; do
+	./remove-cluster.sh
+	./boot_credit.sh
+	./reboot.sh $PASS
+	wait_for_all_hosts
+	echo "time_slice: $time_slice  vm: $vm  ${results}/${vm}_per_cpu/"
+	run_experiment $vm "benchmark/suite.def.4nodes" "robin_${time_slice}" "${results}/${vm}_per_cpu/"
+    done
+}
+
+run_experiment_credit "experiment-results"
+run_experiment_robin "experiment-results"
