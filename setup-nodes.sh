@@ -18,7 +18,6 @@ function setup {
     ssh $1 "echo '$PASS' | sudo -S sh $SCRIPT"
 }
 
-setup master@compute-021
-setup master@compute-022
-setup master@compute-023
-setup master@compute-024
+for host in $(cat hosts); do
+    setup "master@$host"
+done

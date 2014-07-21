@@ -6,10 +6,14 @@ function remove_vm_and_cfg {
     ssh $1 "rm mpi_node*.cfg"
 }
 
-remove_vm_and_cfg master@compute-021 &
-remove_vm_and_cfg master@compute-022 &
-remove_vm_and_cfg master@compute-023 &
-remove_vm_and_cfg master@compute-024 &
+# remove_vm_and_cfg master@compute-021 &
+# remove_vm_and_cfg master@compute-022 &
+# remove_vm_and_cfg master@compute-023 &
+# remove_vm_and_cfg master@compute-024 &
+
+for host in $(cat hosts); do
+    remove_vm_and_cfg "master@$host" &
+done
 wait
 
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NODES=4
+NODES=$(wc -l hosts |awk '{print $1}')
 PASS=$1
 USER=master
 VM_REGISTRATION_FILE=~/registered_ips
@@ -15,25 +15,28 @@ function wait_for {
     eval $1
     while [ $? -ne 0 ]
     do
+	printf "."
 	sleep 1;
 	eval $1
     done
+    printf "\n"
 }
 
 function wait_for_host {
-    wait_for "ssh $1 'ls' >> /dev/null"
+    wait_for "ssh $1 'ls' >> /dev/null 2>&1"
 }
 
 function wait_for_all_hosts {
-    for i in `seq 4`; do
-	wait_for_host "master@compute-02$i"
+    for host in $(cat hosts); do
+	echo "waiting for $host..."
+	wait_for_host "master@$host"
     done
 }
 
 function for_each_host {
     local cmd=$1
-    for node in `seq $NODES`; do
-	ssh $USER@"compute-02$node" $cmd
+    for host in $(cat hosts); do
+	ssh "$USER@$host" $cmd
     done
 }
 
@@ -72,9 +75,9 @@ function setup_mpi_group {
 
     create_config_files $first_cpu $last_cpu $group_id $memory
     
-    for node in `seq $NODES`; do
-	echo "Building cluster at node $node..."
-    	./create-mpi-cluster.sh "master@compute-02$node" $first_cpu $last_cpu $memory $group_id >> /dev/null &
+    for host in $(cat hosts); do
+	echo "Building cluster at node $host..."
+    	./create-mpi-cluster.sh "master@$host" $first_cpu $last_cpu $memory $group_id >> /dev/null &
     done
     wait
     echo "Every node is ready!"
@@ -87,6 +90,7 @@ function setup_experiment {
     local vm_per_cpu=$1
     local suite_def=$2
     ./remove-cluster.sh
+    sleep 5;
     for i in `seq $vm_per_cpu`; do
 	rm $VM_REGISTRATION_FILE
 	echo "CREATING GROUP $i"
@@ -138,9 +142,9 @@ function run_experiment {
 function run_experiment_credit {
     local results=$1
     ./boot_credit.sh
-    ./reboot.sh $PASS
+    sleep 5;
     wait_for_all_hosts
-    for time_slice in 30 5 1; do
+    for time_slice in 5 1; do
 	for_each_host "sudo xl sched-credit -s -t ${time_slice}"
 	for vm in 1 2 3 4; do
 	    echo "time_slice: $time_slice  vm: $vm  ${results}/${vm}_per_cpu/"
@@ -154,8 +158,7 @@ function run_experiment_robin {
     local time_slice=5
     for vm in 1 2 3 4; do
 	./remove-cluster.sh
-	./boot_credit.sh
-	./reboot.sh $PASS
+	./boot_cosch.sh
 	wait_for_all_hosts
 	echo "time_slice: $time_slice  vm: $vm  ${results}/${vm}_per_cpu/"
 	run_experiment $vm "benchmark/suite.def.4nodes" "robin_${time_slice}" "${results}/${vm}_per_cpu/"
