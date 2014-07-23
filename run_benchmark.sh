@@ -142,7 +142,8 @@ function run_experiment {
 function run_experiment_credit {
     local results=$1
     ./boot_credit.sh
-    sleep 5;
+    sleep 2;
+    ./reboot.sh $PASS
     wait_for_all_hosts
     for time_slice in 5 1; do
 	for_each_host "sudo xl sched-credit -s -t ${time_slice}"
@@ -159,6 +160,8 @@ function run_experiment_robin {
     for vm in 1 2 3 4; do
 	./remove-cluster.sh
 	./boot_cosch.sh
+	sleep 2;
+	./reboot.sh $PASS
 	wait_for_all_hosts
 	echo "time_slice: $time_slice  vm: $vm  ${results}/${vm}_per_cpu/"
 	run_experiment $vm "benchmark/suite.def.4nodes" "robin_${time_slice}" "${results}/${vm}_per_cpu/"
